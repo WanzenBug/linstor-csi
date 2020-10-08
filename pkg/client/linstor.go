@@ -631,20 +631,32 @@ func (s *Linstor) VolFromVol(ctx context.Context, sourceVol, vol *volume.Info) e
 		"sourceVolume": fmt.Sprintf("%+v", sourceVol),
 	}).Info("creating volume from snapshot")
 
-	tmpName := s.fallbackNameUUIDNew()
-	if err := s.client.Resources.CreateSnapshot(ctx,
-		lapi.Snapshot{
-			Name:         tmpName,
-			ResourceName: sourceVol.ID,
-		}); err != nil {
-		return fmt.Errorf("failed to create snapshot: %v", err)
+	snapNameForVolume, err := linstorifyResourceName(fmt.Sprintf("src-for-%s", vol.ID))
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot name: %w", err)
 	}
 
-	return s.VolFromSnap(
-		ctx,
-		&volume.SnapInfo{Name: tmpName, CsiSnap: &csi.Snapshot{SourceVolumeId: sourceVol.ID}},
-		vol,
-	)
+	_, err = s.client.Resources.GetSnapshot(ctx, sourceVol.ID, snapNameForVolume)
+	if err != nil{
+		if err != lapi.NotFoundError {
+			return fmt.Errorf("unknown error when checking for snapshot '%s' on volume '%s'", snapNameForVolume, sourceVol.ID)
+		}
+
+		err = s.client.Resources.CreateSnapshot(ctx, lapi.Snapshot{
+			Name: snapNameForVolume,
+			ResourceName: sourceVol.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create snapshot of '%s' for '%s': %w", sourceVol.ID, vol.ID, err)
+		}
+	}
+
+	snapInfo := &volume.SnapInfo{
+		Name: snapNameForVolume,
+		CsiSnap: &csi.Snapshot{SourceVolumeId: sourceVol.ID},
+	}
+
+	return s.VolFromSnap(ctx, snapInfo, vol)
 }
 
 // Reconcile a ResourceGroup based on the values passed to the StorageClass
